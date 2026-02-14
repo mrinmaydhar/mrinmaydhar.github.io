@@ -107,11 +107,19 @@
 
 \begin{center}
     \textbf{\Huge \scshape Mrinmay Dhar} \\ \vspace{1pt}
-    \small +91-8375944027 $|$ \href{mailto:contact@mrinmaydhar.com}{\underline{contact@mrinmaydhar.com}} $|$ 
-    \href{https://www.linkedin.com/in/mrinmaydhar/}{\underline{LinkedIn}} $|$
-    \href{https://github.com/mrinmaydhar}{\underline{GitHub}}
+    \small +91-8375944027 $|$ 
+    \href{mailto:contact@mrinmaydhar.com}{contact@mrinmaydhar.com} $|$ 
+    \href{https://www.linkedin.com/in/mrinmaydhar/}{LinkedIn} $|$
+    \href{https://github.com/mrinmaydhar}{GitHub}
 \end{center}
 
+%-----------EDUCATION-----------
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Amity University}{Noida, UP}
+      {Bachelor of Technology in Computer Science and Engineering}{2016 -- 2020}
+  \resumeSubHeadingListEnd
 
 %-----------EXPERIENCE-----------
 \section{Experience}
@@ -151,7 +159,7 @@
     \resumeSubHeadingListStart
     
       \resumeProjectHeading
-          {\textbf{ALM Workbench tooling} $|$ \emph{Internal VS extension}}{}
+          {\textbf{ALM Workbench} $|$ \emph{Tooling for internal VS extension.}}{\emph{Icertis}}
           \resumeItemListStart
             \resumeItem{{\textbf{Configuration Deployment Tool}} - Developed a configuration management utility, automating updates to blob storage container used in code hooks.}
             \resumeItem{{\textbf{DocuSign Validation Tool}} - Built an automated validation system for DocuSign integrations that verifies configuration like RSA keys/Client IDs and executes required API sequences for P2P.}
@@ -159,15 +167,15 @@
           \resumeItemListEnd
           
       \resumeProjectHeading
-          {\textbf{oci-home-cloud} $|$ \href{https://github.com/mrinmaydhar/oci-home-cloud}{\emph{GitHub}}}{}
+          {\textbf{oci-home-cloud} $|$ \emph{Cloud infrastructure setup for protecting home network.}}{\href{https://github.com/mrinmaydhar/oci-home-cloud}{\emph{GitHub}}}
           \resumeItemListStart
-            \resumeItem{Set up a homelab on OCI that routes network traffic through Wireguard VPN.}
+            \resumeItem{VPS on OCI that acts as exit node, routing network traffic through Wireguard VPN.}
             \resumeItem{Network devices are protected by Cloudflare tunnels, Crowdsec, and UFW.}
             \resumeItem{Traefik is configured as reverse proxy to provide FQDNs to internal services.}
-            \resumeItem{VM is setup via terraform plans, and managed by ansible to ensure reproducibility.}
+            \resumeItem{VM is setup via Terraform plans and managed by Ansible to ensure reproducibility.}
+            \resumeItem{All hosted applications are configured via Docker Compose files.}
             \resumeItem{Network fail-over achieved via OpenWRT package - mwan3.}
           \resumeItemListEnd
-
           
     \resumeSubHeadingListEnd
 
@@ -180,15 +188,6 @@
      \textbf{Infrastructure \& Tools}{: Agile, CI/CD, DevOps, MVC, Linux, REST API, Azure}
     }}
  \end{itemize}
-
-
-%-----------EDUCATION-----------
-\section{Education}
-  \resumeSubHeadingListStart
-    \resumeSubheading
-      {Amity University}{Noida, UP}
-      {Bachelor of Technology in Computer Science and Engineering}{2016 -- 2020}
-  \resumeSubHeadingListEnd
 
 %-------------------------------------------
 \end{document}
