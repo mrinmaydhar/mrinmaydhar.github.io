@@ -22,31 +22,13 @@ jobs:
           root_file: main.tex
           working_directory: resume/
 
-      # Step C: Prepare the "Website" folder
-      # We create a temporary 'public' folder that will become the website
       - name: Prepare Output
         run: |
-          mkdir public
+          # Copy web assets (index.html, favicons, CNAME) to deploy folder
+          cp -r web public
           
-          # Move the compiled PDF to public and rename it
+          # Move the compiled PDF to the deploy folder
           mv resume/main.pdf public/resume.pdf
-          
-          # Create a simple index.html that embeds the PDF
-          echo '<!DOCTYPE html>
-          <html lang="en">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Mrinmay Dhar - Resume</title>
-              <style>
-                  body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #525659; }
-                  iframe { width: 100%; height: 100%; border: none; }
-              </style>
-          </head>
-          <body>
-              <iframe src="resume.pdf" title="Resume PDF"></iframe>
-          </body>
-          </html>' > public/index.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
