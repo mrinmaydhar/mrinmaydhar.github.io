@@ -21,14 +21,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Compile LaTeX documents
+      - name: Discover and compile LaTeX documents
+        id: latex
         uses: xu-cheng/latex-action@v4
         with:
-          root_file: "*/main.tex"
-          glob_root_file: true
+          root_file: resume/main.tex
+          work_in_root_file_dir: true
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Prepare Output
         run: |
@@ -37,16 +38,16 @@ jobs:
           # Copy root web assets
           cp -r web/* public/
 
-          # For each compiled PDF, create a subpath matching its source directory
-          for pdf in */main.pdf; do
-            [ -f "$pdf" ] || continue
-            slug="$(dirname "$pdf")"
+          # For each directory containing a compiled PDF, create a matching subpath
+          for pdf in $(find . -path './.git' -prune -o -path './public' -prune -o -name 'main.pdf' -print); do
+            dir="$(dirname "$pdf")"
+            slug="${dir#./}"
             mkdir -p "public/$slug"
             cp "$pdf" "public/$slug/main.pdf"
 
             # Copy the per-directory index.html viewer if it exists
-            if [ -f "$slug/index.html" ]; then
-              cp "$slug/index.html" "public/$slug/index.html"
+            if [ -f "$dir/index.html" ]; then
+              cp "$dir/index.html" "public/$slug/index.html"
             fi
           done
 
@@ -54,7 +55,7 @@ jobs:
           find public -type f | sort
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: './public'
 
@@ -67,7 +68,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   cloudflare:
     runs-on: ubuntu-latest
@@ -92,16 +93,22 @@ jobs:
           fi
 
       - name: Verify DNS records
+        env:
+          CF_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           domain="mrinmaydhar.com"
-          expected_cname="mrinmaydhar.github.io"
+          expected="mrinmaydhar.github.io"
 
-          echo "Checking DNS for $domain..."
-          resolved=$(dig +short CNAME "$domain" | sed 's/\.$//')
+          echo "Checking Cloudflare DNS for $domain..."
+          records=$(curl -s \
+            "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$domain&type=CNAME" \
+            -H "Authorization: Bearer $CF_API_TOKEN")
 
-          if [ "$resolved" = "$expected_cname" ]; then
-            echo "✓ DNS CNAME is correct: $domain → $resolved"
+          content=$(echo "$records" | jq -r '.result[0].content // empty')
+
+          if [ "$content" = "$expected" ]; then
+            echo "✓ DNS CNAME is correct: $domain → $content"
           else
-            echo "Current resolution: $(dig +short "$domain")"
-            echo "::warning::DNS CNAME for $domain does not point to $expected_cname (got: ${resolved:-<no CNAME>}). Verify Cloudflare DNS settings."
+            echo "::warning::DNS CNAME for $domain does not point to $expected (got: ${content:-<not found>}). Verify Cloudflare DNS settings."
           fi
