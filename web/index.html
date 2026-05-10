@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mrinmay Dhar</title>
-    <meta property="og:title" content="Mrinmay Dhar - Resume">
+    <meta property="og:title" content="Mrinmay Dhar">
     <meta property="og:description" content="Software Engineer | .NET, SQL, TypeScript, Azure">
     <meta property="og:image" content="https://mrinmaydhar.com/memoji.png">
     <meta property="og:url" content="https://mrinmaydhar.com">
@@ -14,13 +14,63 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="manifest" href="site.webmanifest">
-    
+
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #525659; }
-        iframe { width: 100%; height: 100%; border: none; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: #ffffff;
+        }
+        .subtitle {
+            font-size: 1.1rem;
+            color: #a0a0b0;
+            margin-bottom: 2rem;
+        }
+        .links {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .links a {
+            color: #64b5f6;
+            text-decoration: none;
+            font-size: 1.1rem;
+            padding: 0.6rem 1.2rem;
+            border: 1px solid #64b5f6;
+            border-radius: 6px;
+            transition: background 0.2s, color 0.2s;
+        }
+        .links a:hover {
+            background: #64b5f6;
+            color: #1a1a2e;
+        }
     </style>
   </head>
   <body>
-      <iframe src="resume.pdf" title="Mrinmay Dhar Resume"></iframe>
+    <div class="container">
+        <h1>Mrinmay Dhar</h1>
+        <p class="subtitle">Software Engineer</p>
+        <div class="links">
+            <a href="/resume">Resume</a>
+            <a href="https://www.linkedin.com/in/mrinmaydhar/">LinkedIn</a>
+            <a href="https://github.com/mrinmaydhar">GitHub</a>
+        </div>
+    </div>
   </body>
 </html>

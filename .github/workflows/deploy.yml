@@ -1,4 +1,4 @@
-name: Deploy Resume Site
+name: Deploy Site
 
 on:
   push:
@@ -21,20 +21,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Compile LaTeX
+      - name: Compile LaTeX documents
         uses: xu-cheng/latex-action@v4
         with:
-          root_file: main.tex
-          working_directory: resume/
+          root_file: "*/main.tex"
+          glob_root_file: true
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Prepare Output
         run: |
-          mkdir public
+          mkdir -p public
+
+          # Copy root web assets
           cp -r web/* public/
-          mv resume/main.pdf public/resume.pdf
+
+          # For each compiled PDF, create a subpath matching its source directory
+          for pdf in */main.pdf; do
+            [ -f "$pdf" ] || continue
+            slug="$(dirname "$pdf")"
+            mkdir -p "public/$slug"
+            cp "$pdf" "public/$slug/main.pdf"
+
+            # Copy the per-directory index.html viewer if it exists
+            if [ -f "$slug/index.html" ]; then
+              cp "$slug/index.html" "public/$slug/index.html"
+            fi
+          done
+
+          echo "--- Final site structure ---"
+          find public -type f | sort
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
@@ -51,3 +68,40 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  cloudflare:
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: ${{ vars.CLOUDFLARE_ZONE_ID != '' }}
+    steps:
+      - name: Purge Cloudflare Cache
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${{ vars.CLOUDFLARE_ZONE_ID }}/purge_cache" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"purge_everything":true}')
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "$body" | jq .
+          if [ "$http_code" -ne 200 ]; then
+            echo "::error::Cloudflare cache purge failed with HTTP $http_code"
+            exit 1
+          fi
+
+      - name: Verify DNS records
+        run: |
+          domain="mrinmaydhar.com"
+          expected_cname="mrinmaydhar.github.io"
+
+          echo "Checking DNS for $domain..."
+          resolved=$(dig +short CNAME "$domain" | sed 's/\.$//')
+
+          if [ "$resolved" = "$expected_cname" ]; then
+            echo "✓ DNS CNAME is correct: $domain → $resolved"
+          else
+            echo "Current resolution: $(dig +short "$domain")"
+            echo "::warning::DNS CNAME for $domain does not point to $expected_cname (got: ${resolved:-<no CNAME>}). Verify Cloudflare DNS settings."
+          fi
