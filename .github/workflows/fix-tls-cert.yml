@@ -1,0 +1,74 @@
+name: Fix TLS Certificate Provisioning
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-cert:
+    runs-on: ubuntu-latest
+    if: ${{ vars.CLOUDFLARE_ZONE_ID != '' }}
+    env:
+      CF_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DOMAIN: mrinmaydhar.com
+      APEX_RECORD_ID: "3f545465b330aae0808a7252af6b79b7"
+      WWW_RECORD_ID: "8f7723903b39861db9b85b79e1bc1403"
+    steps:
+      - name: Disable Cloudflare proxy (DNS only)
+        run: |
+          echo "Disabling proxy on apex and www records..."
+          for record_id in "$APEX_RECORD_ID" "$WWW_RECORD_ID"; do
+            result=$(curl -sf -X PATCH \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$record_id" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"proxied": false}')
+            name=$(echo "$result" | jq -r '.result.name')
+            echo "✓ Disabled proxy on $name"
+          done
+
+      - name: Wait for TLS certificate provisioning
+        run: |
+          echo "Waiting for GitHub Pages to provision TLS cert..."
+          echo "Checking https://$DOMAIN every 30s (timeout: 10 min)"
+          attempts=0
+          max_attempts=20
+          while [ $attempts -lt $max_attempts ]; do
+            attempts=$((attempts + 1))
+            http_code=$(curl -so /dev/null -w '%{http_code}' "https://$DOMAIN" 2>/dev/null || echo "000")
+            echo "Attempt $attempts/$max_attempts: HTTP $http_code"
+            if [ "$http_code" = "200" ]; then
+              echo "✓ TLS cert is active — site returns 200"
+              break
+            fi
+            if [ $attempts -eq $max_attempts ]; then
+              echo "::error::Timed out waiting for TLS cert. Check GitHub Pages settings manually."
+              echo "::warning::Proxy left DISABLED — re-enable manually or re-run this workflow."
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Re-enable Cloudflare proxy
+        run: |
+          echo "Re-enabling proxy on apex and www records..."
+          for record_id in "$APEX_RECORD_ID" "$WWW_RECORD_ID"; do
+            result=$(curl -sf -X PATCH \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$record_id" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"proxied": true}')
+            name=$(echo "$result" | jq -r '.result.name')
+            echo "✓ Re-enabled proxy on $name"
+          done
+
+      - name: Verify site through proxy
+        run: |
+          echo "Waiting 10s for DNS propagation..."
+          sleep 10
+          http_code=$(curl -so /dev/null -w '%{http_code}' "https://$DOMAIN")
+          if [ "$http_code" = "200" ]; then
+            echo "✓ Site is live through Cloudflare proxy"
+          else
+            echo "::warning::Site returned HTTP $http_code — may need a few minutes for DNS to propagate"
+          fi
