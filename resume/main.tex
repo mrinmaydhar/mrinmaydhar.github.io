@@ -129,6 +129,9 @@
       {Senior Software Engineer}{Feb. 2026 -- Present}
       {Icertis Solutions Pvt. Ltd.}{Pune, MH}
       \resumeItemListStart
+        \resumeItem{Co-engineered a high-priority, custom \textbf{SAP Ariba Adapter integration} with zero defects on an urgent timeline, unblocking critical project dependencies and driving significant ARR.}
+        \resumeItem{Piloted the evaluation of \textbf{GitHub Copilot}, assessing cross-repository context retrieval across multi-customer codebases to secure senior leadership buy-in for enterprise-wide licensing.}
+        \resumeItem{Created foundational tooling for Copilot adoption; building custom \textbf{MCP servers}, process workflows (\textbf{skills.md}, \textbf{agents.md}, \textbf{instructions.md}), and code reference frameworks to streamline org-wide integration.}
         \resumeItem{Performed migration of customers to \textbf{Multi-Tenant}, eliminating cross-team dependencies and achieving \textbf{TTV} for platform upgrades \textbf{before schedule}.}
         \resumeItem{Implemented \textbf{APIM} for API reporting data. Data helped to optimize downstream application and \textbf{reduce failure rates from 25\% to 0.01\%} after collaborating with client engineering teams.}
         \resumeItem{Engineered an \textbf{event-driven orchestration} layer on APIM. Implemented batch processing and optimized payload size via query filtering, \textbf{reducing monthly call volume by over 90\%} (120k to $\sim$10k).}
@@ -158,25 +161,15 @@
 \section{Projects}
     \resumeSubHeadingListStart
     
-      \resumeProjectHeading
-          {\textbf{ALM Workbench} $|$ \emph{Tooling for internal VS extension.}}{\emph{Icertis}}
-          \resumeItemListStart
-            \resumeItem{{\underline{Configuration Deployment Tool}} - Created a tool that \textbf{automatically updates configuration files} in blob storage, which is referred by hooks used in C\# and TS code.}
-            \resumeItem{{\underline{DocuSign Validation Tool}} - Built an \textbf{automated validation system for DocuSign integrations} that verifies configuration like RSA keys/Client IDs and executes required API sequences for P2P.}
-            \resumeItem{{\underline{Solution Minification Tool}} - Developed a plugin that compresses project solution and strips NuGet dependencies for static analysis, \textbf{reducing artifact size by 99\%} ($\sim$2GB to $\sim$5MB).}
-          \resumeItemListEnd
-          
-      \resumeProjectHeading
-          {\textbf{oci-home-cloud} $|$ \emph{Cloud infrastructure setup for protecting home network.}}{\href{https://github.com/mrinmaydhar/oci-home-cloud}{\emph{GitHub}}}
-          \resumeItemListStart
-            \resumeItem{VPS on OCI that acts as exit node, routing network traffic through \textbf{Wireguard VPN}.}
-            \resumeItem{Network devices are protected by \textbf{Cloudflare tunnels}, \textbf{Crowdsec}, and \textbf{UFW}.}
-            \resumeItem{\textbf{Traefik} is configured as reverse proxy to provide FQDNs to internal services.}
-            \resumeItem{VM is provisioned via \textbf{Terraform} plans and managed by \textbf{Ansible} to ensure reproducibility.}
-            \resumeItem{All hosted applications are configured via \textbf{Docker Compose} files.}
-            \resumeItem{Network fail-over achieved via \textbf{OpenWRT} package - mwan3.}
-          \resumeItemListEnd
-          
+        \resumeProjectHeading
+            {\textbf{oci-home-cloud} $|$ \emph{Zero-Trust Cloud Infrastructure \& Home Network Security}}{\href{https://github.com/mrinmaydhar/oci-home-cloud}{\emph{GitHub}}}
+            \resumeItemListStart
+                \resumeItem{Architected a secure home mesh network on an \textbf{Oracle Cloud Infrastructure (OCI)} VPS using a \textbf{Headscale} control plane and \textbf{Tailscale} (\textbf{OpenVPN} legacy fallback), with \textbf{Traefik} handling FQDN routing and \textbf{Authentik} (GitHub IdP) enforcing SSO.}
+                \resumeItem{Hardened network security using \textbf{CrowdSec} and \textbf{UFW} firewalls, pairing \textbf{AdGuard Home} with \textbf{Unbound} for local recursive, ad-blocking DNS resolution.}
+                \resumeItem{Automated infrastructure provisioning and container management using \textbf{Terraform}, \textbf{Ansible}, and \textbf{Podman Quadlets}, ensuring reproducibility backed by \textbf{Pytest} and \textbf{Playwright} E2E tests.}
+                \resumeItem{Implemented end-to-end telemetry using \textbf{Grafana}, \textbf{Prometheus}, \textbf{Alloy}, \textbf{Loki}, and \textbf{Blackbox Exporter}, aggregated into a \textbf{Homepage} operational dashboard.}
+            \resumeItemListEnd
+            
     \resumeSubHeadingListEnd
 
 %-----------PROGRAMMING SKILLS-----------
