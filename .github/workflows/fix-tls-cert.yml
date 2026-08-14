@@ -2,7 +2,10 @@ name: Fix TLS Certificate Provisioning
 
 on:
   workflow_dispatch:
-
+  schedule:
+    # Runs at 00:00 UTC on the 1st day of every month
+    - cron: '0 0 1 * *'
+    
 jobs:
   fix-cert:
     runs-on: ubuntu-latest
@@ -50,6 +53,7 @@ jobs:
           done
 
       - name: Re-enable Cloudflare proxy
+        if: always() # <-- Ensures proxy is ALWAYS restored even if the job fails/times out
         run: |
           echo "Re-enabling proxy on apex and www records..."
           for record_id in "$APEX_RECORD_ID" "$WWW_RECORD_ID"; do
