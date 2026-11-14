@@ -9,6 +9,7 @@ on:
 jobs:
   fix-cert:
     runs-on: ubuntu-latest
+    permissions: {}
     if: ${{ vars.CLOUDFLARE_ZONE_ID != '' }}
     env:
       CF_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
