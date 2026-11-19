@@ -12,7 +12,7 @@ const {
 const READY = new Set(['issued', 'uploaded', 'approved']);
 const TLS_ERRORS = new Set([51, 60]);
 const LIMITS = Object.freeze({
-  dnsAttempts: 20,
+  dnsAttempts: 41,
   dnsDelayMs: 15_000,
   detachDelayMs: 5_000,
   certificateAttempts: 61,
@@ -138,6 +138,7 @@ async function setProxy(client, entry, proxied) {
   entry.touched = true;
   const result = await cfRequest(client, `dns_records/${record.id}`, 'PATCH', { proxied });
   if (result?.proxied !== proxied) throw new Error(`Cloudflare did not confirm proxy=${proxied} for ${record.host}.`);
+  record.proxied = proxied;
   entry.touched = proxied !== entry.originalProxy;
 }
 
@@ -177,6 +178,20 @@ async function waitForDns(options, hosts, origins, limits) {
       return { ok: !errors.length, message: errors.join('; ') };
     },
   });
+}
+
+async function verifyDnsOnly(client, entries, hosts, originHostname, sleep) {
+  const current = await retry(() => siteRecords(client, hosts, originHostname), sleep);
+  const expected = new Map(entries.map(entry => [entry.record.id, entry.record.host]));
+  const errors = current.flatMap(entry => {
+    const host = expected.get(entry.record.id);
+    return host && entry.record.host === host && entry.record.proxied === false
+      ? []
+      : [`${entry.record.host} is not the expected DNS-only Pages record`];
+  });
+  if (errors.length || current.length !== 2) {
+    throw new Error(`Cloudflare did not confirm both Pages CNAMEs are DNS-only: ${errors.join('; ')}`);
+  }
 }
 
 function verifyOrigin(options, hosts, origins) {
@@ -261,6 +276,7 @@ module.exports = async function recoverTls({
       for (const entry of entries) {
         if (entry.originalProxy) await setProxy(client, entry, false);
       }
+      await verifyDnsOnly(client, entries, hosts, originHostname, sleep);
       await waitForDns({ resolve4: resolveHost, sleep }, hosts, origins, limits);
 
       detached = true;

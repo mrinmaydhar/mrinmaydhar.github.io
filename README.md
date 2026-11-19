@@ -151,7 +151,8 @@ reports a certificate error. The workflow then:
    IDs; unrelated records are never eligible. Cloudflare requests are limited to
    list operations and a `PATCH` whose only field is the existing record's
    `proxied` flag. The workflow never creates or deletes DNS records.
-3. Temporarily makes the CNAMEs DNS-only and waits for public DNS to reach Pages.
+3. Temporarily makes the CNAMEs DNS-only, verifies that state through Cloudflare's
+   API, and waits up to 10 minutes for public DNS caches to reach Pages.
 4. Removes and immediately restores the Pages hostname, then waits up to an hour
    for a certificate covering apex and `www`.
 5. Verifies both hostnames directly against every Pages origin without `--insecure`.

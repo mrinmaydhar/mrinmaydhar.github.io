@@ -29,7 +29,7 @@ jobs:
     name: Recover Pages TLS certificate
     if: ${{ github.ref == 'refs/heads/main' && (inputs.from_monitor || inputs.confirm == 'RECOVER') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 80
+    timeout-minutes: 95
     environment: github-pages
     permissions:
       contents: read
