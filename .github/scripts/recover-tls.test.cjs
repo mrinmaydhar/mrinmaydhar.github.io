@@ -23,14 +23,26 @@ const pages = broken => ({
     domains: [domain, `www.${domain}`],
   },
 });
-const curl = (httpCode = 200, tlsError = false, cfRay = true) => ({
-  status: tlsError ? 60 : 0,
-  stderr: tlsError ? 'curl: (60) SSL certificate expired' : '',
-  stdout: JSON.stringify({
-    transfer: { http_code: httpCode, url_effective: `https://${domain}/`, remote_ip: origins[0] },
-    headers: cfRay ? { 'cf-ray': ['ray'] } : {},
-  }),
-});
+const pendingError = status => Object.assign(
+  new Error('The certificate has not finished being issued'),
+  { status },
+);
+// Mirrors curl --location after GitHub's www redirect: the apex keeps the requested path.
+const curl = (args, { httpCode = 200, tlsError = false, challenged = false } = {}) => {
+  const requested = new URL(args.at(-1));
+  return {
+    status: tlsError ? 60 : 0,
+    stderr: tlsError ? 'curl: (60) SSL certificate expired' : '',
+    stdout: JSON.stringify({
+      transfer: {
+        http_code: httpCode,
+        url_effective: `https://${domain}${requested.pathname}${requested.search}`,
+        remote_ip: origins[0],
+      },
+      headers: { 'cf-ray': ['ray'], ...(challenged ? { 'cf-mitigated': ['challenge'] } : {}) },
+    }),
+  };
+};
 
 function fixture({
   broken = false,
@@ -44,12 +56,21 @@ function fixture({
   pagesRestoreFailures = 0,
   patchFailure,
   publicHttp = 200,
+  publicChallenged = false,
+  enforceErrors = [],
+  originPropagationFailures = 0,
+  issueCertificate = true,
+  advanceClock = false,
   staleDnsChecks = 0,
   dnsAttempts = 1,
+  timing = {},
 } = {}) {
   const state = {
     pages: pages(broken),
     directTlsError,
+    reattached: false,
+    elapsed: 0,
+    curlCalls: [],
     patches: [],
     pagesUpdates: [],
     pageRequests: [],
@@ -73,6 +94,7 @@ function fixture({
         if (pagesPreflightFailures-- > 0) throw new Error('Pages permission denied');
         return { status: 204 };
       }
+      if (request.https_enforced === true && enforceErrors.length) throw enforceErrors.shift();
       if (request.cname === null) {
         if (pagesDetachFailures-- > 0) throw new Error('Pages detach failed');
         state.pages.cname = null;
@@ -84,7 +106,12 @@ function fixture({
         if (request.https_enforced === undefined) {
           state.pages = pages(false);
           state.pages.https_enforced = false;
-          state.directTlsError = false;
+          if (issueCertificate) {
+            state.directTlsError = false;
+            state.reattached = true;
+          } else {
+            state.pages.https_certificate.state = 'authorization_created';
+          }
         } else {
           state.pages.https_enforced = request.https_enforced;
         }
@@ -134,9 +161,12 @@ function fixture({
     }
     throw new Error(`Unexpected DNS lookup: ${hostname}`);
   };
-  const spawnSync = (_command, args) => args.includes('--resolve')
-    ? curl(200, state.directTlsError)
-    : curl(publicHttp);
+  const spawnSync = (_command, args) => {
+    state.curlCalls.push(args);
+    if (!args.includes('--resolve')) return curl(args, { httpCode: publicHttp, challenged: publicChallenged });
+    const propagating = state.reattached && originPropagationFailures-- > 0;
+    return curl(args, { tlsError: state.directTlsError || propagating });
+  };
   const options = {
     github,
     context: { repo: { owner, repo: 'site' } },
@@ -147,14 +177,17 @@ function fixture({
     fetchImpl,
     resolve4,
     spawnSync,
-    sleep: async () => {},
-    now: () => now,
+    sleep: async milliseconds => { if (advanceClock) state.elapsed += milliseconds; },
+    now: () => now + state.elapsed,
     timing: {
       dnsAttempts,
       dnsDelayMs: 0,
       certificateAttempts: 1,
+      originAttempts: 1,
+      enforceAttempts: 1,
       publicAttempts: 1,
       detachDelayMs: 0,
+      ...timing,
     },
   };
   return { state, run: () => recoverTls(options) };
@@ -233,30 +266,114 @@ test('Pages token preflight fails before Cloudflare is changed', async () => {
   assert.deepEqual(f.state.patches, []);
 });
 
-test('an authorized 409 from in-progress certificate issuance continues recovery', async () => {
-  const error = Object.assign(
-    new Error('The certificate has not finished being issued'),
-    { status: 409 },
-  );
+test('an authorized 404 or 409 from in-progress certificate issuance continues recovery', async t => {
+  for (const status of [404, 409]) {
+    await t.test(String(status), async () => {
+      const f = fixture({
+        broken: true,
+        directTlsError: true,
+        pagesPreflightError: pendingError(status),
+      });
+      assert.deepEqual(await f.run(), { recovered: true, reason: 'certificate_recovered' });
+      assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain]);
+      assert.equal(f.state.pages.https_enforced, true);
+    });
+  }
+});
+
+test('other Pages preflight 404 and 409 responses still stop before Cloudflare changes', async t => {
+  for (const [status, message] of [[404, 'Not Found'], [409, 'A different conflict occurred']]) {
+    await t.test(`${status} ${message}`, async () => {
+      const f = fixture({
+        broken: true,
+        directTlsError: true,
+        pagesPreflightError: Object.assign(new Error(message), { status }),
+      });
+      await assert.rejects(f.run(), /PAGES_RECOVERY_TOKEN cannot manage/);
+      assert.deepEqual(f.state.pagesUpdates, [domain]);
+      assert.deepEqual(f.state.patches, []);
+    });
+  }
+});
+
+test('HTTPS enforcement waits while GitHub finishes publishing the certificate', async () => {
   const f = fixture({
     broken: true,
     directTlsError: true,
-    pagesPreflightError: error,
+    enforceErrors: [pendingError(404), Object.assign(new Error('Server Error'), { status: 502 })],
+    timing: { enforceAttempts: 3 },
   });
-  assert.equal((await f.run()).recovered, true);
-  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain]);
+  assert.deepEqual(await f.run(), { recovered: true, reason: 'certificate_recovered' });
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain, domain, domain]);
   assert.equal(f.state.pages.https_enforced, true);
 });
 
-test('other Pages preflight 409 responses still stop before Cloudflare changes', async () => {
-  const error = Object.assign(new Error('A different conflict occurred'), { status: 409 });
+test('HTTPS enforcement fails closed and rolls back on timeout or a non-pending client error', async t => {
+  for (const [name, enforceErrors, expected] of [
+    ['timeout', [pendingError(404), pendingError(404)], /did not enable HTTPS enforcement/],
+    ['forbidden', [Object.assign(new Error('Resource not accessible'), { status: 403 })], /Resource not accessible/],
+  ]) {
+    await t.test(name, async () => {
+      const f = fixture({ broken: true, directTlsError: true, enforceErrors, timing: { enforceAttempts: 2 } });
+      await assert.rejects(f.run(), expected);
+      assert.deepEqual(f.state.pagesUpdates.filter(cname => cname === null).length, 1);
+      assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
+      assert.equal(f.state.pages.cname, domain);
+      assert.notEqual(f.state.pages.https_enforced, true);
+    });
+  }
+});
+
+test('origin verification waits for the replacement certificate to propagate', async () => {
   const f = fixture({
     broken: true,
     directTlsError: true,
-    pagesPreflightError: error,
+    originPropagationFailures: 1,
+    timing: { originAttempts: 2 },
   });
-  await assert.rejects(f.run(), /PAGES_RECOVERY_TOKEN cannot manage/);
-  assert.deepEqual(f.state.patches, []);
+  assert.deepEqual(await f.run(), { recovered: true, reason: 'certificate_recovered' });
+
+  const g = fixture({ broken: true, directTlsError: true, originPropagationFailures: 1 });
+  await assert.rejects(g.run(), /Origin TLS verification failed/);
+  assert.notEqual(g.state.pages.https_enforced, true);
+  assert.deepEqual([...g.state.proxies.values()], [true, true]);
+});
+
+test('final Cloudflare check uses a cache-busted asset', async () => {
+  const f = fixture({ broken: true, directTlsError: true });
+  assert.deepEqual(await f.run(), { recovered: true, reason: 'certificate_recovered' });
+  const publicProbes = f.state.curlCalls.filter(args => !args.includes('--resolve'));
+  assert.deepEqual(
+    publicProbes.map(args => args.at(-1)),
+    [domain, `www.${domain}`].map(host => `https://${host}/favicon.ico?tls-check=${now}`),
+  );
+});
+
+test('a Cloudflare challenge never counts as public recovery', async () => {
+  const f = fixture({ broken: true, directTlsError: true, publicHttp: 403, publicChallenged: true });
+  await assert.rejects(f.run(), /challenged the probe before it reached the origin/);
+  assert.deepEqual([...f.state.proxies.values()], [true, true]);
+  assert.equal(f.state.pages.cname, domain);
+  assert.equal(f.state.pages.https_enforced, true);
+});
+
+test('the operation deadline stops waiting and rolls back before the job timeout', async () => {
+  const operationBudgetMs = 10.5 * 60_000;
+  const f = fixture({
+    broken: true,
+    directTlsError: true,
+    issueCertificate: false,
+    advanceClock: true,
+    timing: { operationBudgetMs, certificateAttempts: 61, certificateDelayMs: 60_000 },
+  });
+  await assert.rejects(
+    f.run(),
+    /did not issue a valid certificate before the recovery deadline: state=authorization_created/,
+  );
+  assert.equal(f.state.elapsed, operationBudgetMs);
+  assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
+  assert.equal(f.state.pages.cname, domain);
+  assert.notEqual(f.state.pages.https_enforced, true);
 });
 
 test('recursive DNS cache is allowed to expire beyond the five-minute TTL', async () => {

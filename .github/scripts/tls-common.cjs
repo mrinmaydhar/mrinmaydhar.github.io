@@ -3,6 +3,15 @@
 const childProcess = require('node:child_process');
 const dns = require('node:dns').promises;
 
+// Cloudflare bot protection challenges automated page requests from CI runners,
+// but by default not static assets. A unique query string bypasses the CDN
+// cache, so the probe reaches the origin and surfaces 526 errors.
+const CLOUDFLARE_PROBE_ASSET = '/favicon.ico';
+
+function cloudflareProbePath(nonce) {
+  return `${CLOUDFLARE_PROBE_ASSET}?tls-check=${encodeURIComponent(String(nonce))}`;
+}
+
 function normalizeDnsName(value) {
   return String(value ?? '').toLowerCase().replace(/\.$/, '');
 }
@@ -39,8 +48,10 @@ function probeHttps({
   domain,
   hosts,
   origin = null,
+  path = '/',
   spawnSync = childProcess.spawnSync,
 }) {
+  const expectedUrl = `https://${domain}${path}`;
   const args = [
     '--silent', '--show-error',
     '--location', '--max-redirs', '3',
@@ -53,11 +64,11 @@ function probeHttps({
     args.push('--noproxy', '*');
     for (const name of hosts) args.push('--resolve', `${name}:443:${origin}`);
   }
-  args.push(`https://${host}/`);
+  args.push(`https://${host}${path}`);
 
   const result = spawnSync('curl', args, { encoding: 'utf8', timeout: 25_000 });
   if (result.error) {
-    return { ok: false, curlCode: null, httpCode: 0, message: result.error.message, stderr: '' };
+    return { ok: false, curlCode: null, httpCode: 0, expectedUrl, message: result.error.message, stderr: '' };
   }
 
   let transfer = {};
@@ -69,6 +80,7 @@ function probeHttps({
       ok: false,
       curlCode: result.status,
       httpCode: 0,
+      expectedUrl,
       message: `curl returned invalid JSON: ${result.stdout}`,
       stderr: result.stderr?.trim() || '',
     };
@@ -77,18 +89,21 @@ function probeHttps({
   const httpCode = Number(transfer.http_code) || 0;
   const finalUrl = transfer.url_effective;
   return {
-    ok: result.status === 0 && httpCode === 200 && finalUrl === `https://${domain}/`,
+    ok: result.status === 0 && httpCode === 200 && finalUrl === expectedUrl,
     curlCode: result.status,
     httpCode,
     finalUrl,
+    expectedUrl,
     remoteIp: transfer.remote_ip,
     cfRay: Boolean(headers['cf-ray']?.length),
+    challenged: headers['cf-mitigated']?.some(value => /^challenge$/i.test(String(value).trim())) === true,
     stderr: result.stderr?.trim() || '',
     message: `HTTP ${String(httpCode).padStart(3, '0')}, curl exit ${result.status}, final URL ${finalUrl || '<none>'}`,
   };
 }
 
 module.exports = {
+  cloudflareProbePath,
   getOrigins,
   getPages,
   hostsFor,

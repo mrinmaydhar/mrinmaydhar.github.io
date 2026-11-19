@@ -1,6 +1,7 @@
 'use strict';
 
 const {
+  cloudflareProbePath,
   getOrigins,
   getPages,
   hostsFor,
@@ -12,11 +13,18 @@ const {
 const READY = new Set(['issued', 'uploaded', 'approved']);
 const TLS_ERRORS = new Set([51, 60]);
 const LIMITS = Object.freeze({
+  // Leaves time for one slow check, rollback and the final public check before
+  // the workflow's 120-minute timeout, which would skip in-process rollback.
+  operationBudgetMs: 80 * 60_000,
   dnsAttempts: 41,
   dnsDelayMs: 15_000,
   detachDelayMs: 5_000,
   certificateAttempts: 61,
   certificateDelayMs: 60_000,
+  originAttempts: 10,
+  originDelayMs: 30_000,
+  enforceAttempts: 10,
+  enforceDelayMs: 30_000,
   publicAttempts: 20,
   publicDelayMs: 15_000,
 });
@@ -52,14 +60,18 @@ async function updatePages(github, context, cname, httpsEnforced) {
   await github.request('PUT /repos/{owner}/{repo}/pages', body);
 }
 
+// GitHub answers authorized Pages updates that include https_enforced with
+// 404 (observed) or 409 (documented) while the certificate is not yet issued.
+function certificatePending(error) {
+  return [404, 409].includes(error?.status) &&
+    /certificate has not finished being issued/i.test(error.message);
+}
+
 async function preflightPagesAccess(github, context, pages) {
   try {
     await updatePages(github, context, pages.cname, pages.https_enforced);
   } catch (error) {
-    if (error.status === 409 &&
-        /certificate has not finished being issued/i.test(error.message)) {
-      return;
-    }
+    if (certificatePending(error)) return;
     throw new Error(
       `PAGES_RECOVERY_TOKEN cannot manage GitHub Pages settings; refusing to change DNS: ${error.message}`,
       { cause: error },
@@ -153,27 +165,28 @@ async function setProxy(client, entry, proxied) {
   entry.touched = proxied !== entry.originalProxy;
 }
 
-async function wait(name, { attempts, delayMs, sleep, check }) {
-  let last = '';
+async function wait(name, { attempts, delayMs, sleep, check, now = Date.now, deadline = Infinity }) {
+  let last = 'not checked';
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (now() >= deadline) throw new Error(`${name} before the recovery deadline: ${last}`);
     const result = await check();
     if (result.ok) return result.value;
     last = result.message;
-    if (attempt < attempts) await sleep(delayMs);
+    if (attempt < attempts) await sleep(Math.max(0, Math.min(delayMs, deadline - now())));
   }
   throw new Error(`${name}: ${last}`);
 }
 
-function probe(options, host, origin) {
-  return probeHttps({ ...options, host, origin });
+function probe(options, host, origin, path) {
+  return probeHttps({ ...options, host, origin, path });
 }
 
-async function waitForDns(options, hosts, origins, limits) {
+async function waitForDns(options, hosts, origins, limits, clock) {
   const allowed = new Set(origins);
   return wait('GitHub Pages DNS did not converge', {
+    ...clock,
     attempts: limits.dnsAttempts,
     delayMs: limits.dnsDelayMs,
-    sleep: options.sleep,
     check: async () => {
       const errors = [];
       for (const host of hosts) {
@@ -205,15 +218,41 @@ async function verifyDnsOnly(client, entries, hosts, originHostname, sleep) {
   }
 }
 
-function verifyOrigin(options, hosts, origins) {
-  const failures = [];
-  for (const origin of origins) {
-    for (const host of hosts) {
-      const result = probe(options, host, origin);
-      if (!result.ok) failures.push(`${host} via ${origin}: ${result.message}${result.stderr ? `; ${result.stderr}` : ''}`);
-    }
-  }
-  if (failures.length) throw new Error(`Origin TLS verification failed:\n${failures.join('\n')}`);
+function waitForOrigin(options, hosts, origins, limits, clock) {
+  return wait('Origin TLS verification failed', {
+    ...clock,
+    attempts: limits.originAttempts,
+    delayMs: limits.originDelayMs,
+    check: async () => {
+      const failures = [];
+      for (const origin of origins) {
+        for (const host of hosts) {
+          const result = probe(options, host, origin);
+          if (!result.ok) failures.push(`${host} via ${origin}: ${result.message}${result.stderr ? `; ${result.stderr}` : ''}`);
+        }
+      }
+      return { ok: !failures.length, message: `\n${failures.join('\n')}` };
+    },
+  });
+}
+
+async function enforceHttps(github, context, domain, limits, clock) {
+  await wait('GitHub Pages did not enable HTTPS enforcement', {
+    ...clock,
+    attempts: limits.enforceAttempts,
+    delayMs: limits.enforceDelayMs,
+    check: async () => {
+      try {
+        await updatePages(github, context, domain, true);
+      } catch (error) {
+        const transient = !(error.status >= 400 && error.status < 500);
+        if (!certificatePending(error) && !transient) throw error;
+        return { ok: false, message: error.message };
+      }
+      const pages = await getPages(github, context);
+      return { ok: pages.https_enforced === true, message: 'GitHub did not confirm Pages HTTPS enforcement.' };
+    },
+  });
 }
 
 async function rollback(client, entries, detached, restoreDomain, sleep) {
@@ -250,6 +289,7 @@ module.exports = async function recoverTls({
   timing = {},
 } = {}) {
   const limits = { ...LIMITS, ...timing };
+  const clock = { sleep, now, deadline: now() + limits.operationBudgetMs };
   const domain = validateDomain(rawDomain);
   const hosts = hostsFor(domain);
   const probeOptions = { domain, hosts, spawnSync };
@@ -275,11 +315,7 @@ module.exports = async function recoverTls({
     }
     if (!domainReset) {
       await preflightPagesAccess(github, context, pages);
-      await retry(() => updatePages(github, context, domain, true), sleep);
-      const enforced = await getPages(github, context);
-      if (enforced.https_enforced !== true) {
-        throw new Error('GitHub did not confirm Pages HTTPS enforcement.');
-      }
+      await enforceHttps(github, context, domain, limits, clock);
       return { recovered: true, reason: 'https_enforcement_restored' };
     }
 
@@ -301,7 +337,7 @@ module.exports = async function recoverTls({
         if (entry.originalProxy) await setProxy(client, entry, false);
       }
       await verifyDnsOnly(client, entries, hosts, originHostname, sleep);
-      await waitForDns({ resolve4: resolveHost, sleep }, hosts, origins, limits);
+      await waitForDns({ resolve4: resolveHost }, hosts, origins, limits, clock);
 
       detached = true;
       await updatePages(github, context, null);
@@ -310,9 +346,9 @@ module.exports = async function recoverTls({
       detached = false;
 
       const certificate = await wait('GitHub Pages did not issue a valid certificate', {
+        ...clock,
         attempts: limits.certificateAttempts,
         delayMs: limits.certificateDelayMs,
-        sleep,
         check: async () => {
           const current = await getPages(github, context);
           const cert = current.https_certificate;
@@ -324,12 +360,8 @@ module.exports = async function recoverTls({
         },
       });
       core.info(`Pages certificate: state=${certificate.https_certificate.state}, expires=${certificate.https_certificate.expires_at}`);
-      verifyOrigin(probeOptions, hosts, origins);
-      await retry(() => updatePages(github, context, domain, true), sleep);
-      const enforced = await getPages(github, context);
-      if (enforced.https_enforced !== true) {
-        throw new Error('GitHub did not confirm Pages HTTPS enforcement.');
-      }
+      await waitForOrigin(probeOptions, hosts, origins, limits, clock);
+      await enforceHttps(github, context, domain, limits, clock);
     } catch (error) {
       operationError = error;
     }
@@ -346,16 +378,19 @@ module.exports = async function recoverTls({
       throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
     }
 
+    // Runs after rollback, so it is not bound by the operation deadline.
     await wait('Cloudflare still sees an invalid origin', {
       attempts: limits.publicAttempts,
       delayMs: limits.publicDelayMs,
       sleep,
       check: async () => {
         const errors = [];
+        const path = cloudflareProbePath(now());
         for (const host of hosts) {
-          const result = probe(probeOptions, host);
+          const result = probe(probeOptions, host, null, path);
           const proxied = entries.find(entry => entry.record.host === host)?.originalProxy === true;
-          if (result.httpCode === 526) errors.push(`${host}: Cloudflare still returns 526`);
+          if (result.challenged) errors.push(`${host}: Cloudflare challenged the probe before it reached the origin`);
+          else if (result.httpCode === 526) errors.push(`${host}: Cloudflare still returns 526`);
           else if (result.curlCode !== 0 || !result.ok) errors.push(`${host}: ${result.message}`);
           else if (proxied && !result.cfRay) errors.push(`${host}: cf-ray header missing`);
         }
