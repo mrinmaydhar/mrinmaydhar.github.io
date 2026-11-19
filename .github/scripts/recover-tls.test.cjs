@@ -40,6 +40,8 @@ function fixture({
   pagesRestoreFailures = 0,
   patchFailure,
   publicHttp = 200,
+  staleDnsChecks = 0,
+  dnsAttempts = 1,
 } = {}) {
   const state = {
     pages: pages(broken),
@@ -47,6 +49,7 @@ function fixture({
     patches: [],
     pagesUpdates: [],
     requests: [],
+    dnsChecks: new Map(),
     proxies: new Map(dnsRecords.map(record => [record.id, record.proxied])),
     summary: [],
   };
@@ -87,6 +90,7 @@ function fixture({
     if (patchFailure?.(patch)) return response({ success: false, errors: [{ message: 'PATCH failed' }] }, false);
     state.proxies.set(recordId, body.proxied);
     const record = dnsRecords.find(candidate => candidate.id === recordId);
+    record.proxied = body.proxied;
     return response({ success: true, result: { ...record, proxied: body.proxied } });
   };
 
@@ -101,7 +105,12 @@ function fixture({
     },
   };
   const resolve4 = async hostname => {
-    if ([`${owner}.github.io`, domain, `www.${domain}`].includes(hostname)) return origins;
+    if (hostname === `${owner}.github.io`) return origins;
+    if ([domain, `www.${domain}`].includes(hostname)) {
+      const checks = state.dnsChecks.get(hostname) || 0;
+      state.dnsChecks.set(hostname, checks + 1);
+      return checks < staleDnsChecks ? ['203.0.113.10'] : origins;
+    }
     throw new Error(`Unexpected DNS lookup: ${hostname}`);
   };
   const spawnSync = (_command, args) => args.includes('--resolve')
@@ -120,7 +129,8 @@ function fixture({
     sleep: async () => {},
     now: () => now,
     timing: {
-      dnsAttempts: 1,
+      dnsAttempts,
+      dnsDelayMs: 0,
       certificateAttempts: 1,
       publicAttempts: 1,
       detachDelayMs: 0,
@@ -161,6 +171,7 @@ test('recovery changes only the two allowed CNAME proxy flags and restores them'
   assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
   assert.deepEqual(new Set(f.state.patches.map(patch => patch.id)), new Set(targets.map(record => record.id)));
   assert.deepEqual(f.state.pagesUpdates, [null, domain]);
+  assert.equal(f.state.requests.filter(request => request.method === 'GET').length, 4);
   for (const record of unrelated) assert.equal(f.state.proxies.get(record.id), record.proxied);
   const patches = f.state.requests.filter(request => request.method === 'PATCH');
   assert.ok(patches.every(request => Object.keys(request.body).length === 1 && typeof request.body.proxied === 'boolean'));
@@ -170,6 +181,17 @@ test('recovery changes only the two allowed CNAME proxy flags and restores them'
 test('direct certificate verification can trigger recovery without stale Pages metadata', async () => {
   const f = fixture({ directTlsError: true });
   assert.equal((await f.run()).recovered, true);
+});
+
+test('recursive DNS cache is allowed to expire beyond the five-minute TTL', async () => {
+  const f = fixture({
+    broken: true,
+    directTlsError: true,
+    staleDnsChecks: 21,
+    dnsAttempts: 25,
+  });
+  assert.equal((await f.run()).recovered, true);
+  assert.deepEqual([...f.state.dnsChecks.values()], [22, 22]);
 });
 
 test('Pages configuration drift aborts before Cloudflare changes', async () => {
