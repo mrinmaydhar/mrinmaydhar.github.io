@@ -6,4 +6,3 @@
 *.fdb_latexmk
 *.synctex.gz
 secrets.env
-SETUP.md

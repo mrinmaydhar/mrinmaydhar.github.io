@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Pinned Actions, pre-commit hooks, and CI Python tools. Renovate merges minor/patch updates itself, only when CI is green, the branch is current, and no one else pushed to it.",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver",
+    ":enablePreCommit"
+  ],
+  "minimumReleaseAge": "7 days",
+  "platformAutomerge": false,
+  "packageRules": [
+    {
+      "description": "Major updates and digest-only changes (moved tags) stay in separate PRs for manual review.",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "non-major dependencies",
+      "automerge": true
+    }
+  ]
+}
