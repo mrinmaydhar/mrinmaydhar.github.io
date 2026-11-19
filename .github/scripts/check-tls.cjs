@@ -1,6 +1,13 @@
 'use strict';
 
-const { getOrigins, getPages, hostsFor, probeHttps, validateDomain } = require('./tls-common.cjs');
+const {
+  cloudflareProbePath,
+  getOrigins,
+  getPages,
+  hostsFor,
+  probeHttps,
+  validateDomain,
+} = require('./tls-common.cjs');
 
 module.exports = async function checkTls({ github, context, core, domain }) {
   domain = validateDomain(domain);
@@ -42,17 +49,21 @@ module.exports = async function checkTls({ github, context, core, domain }) {
     rows.push(['Origin DNS lookup', 'Failed; see logs']);
   }
 
+  const cloudflarePath = cloudflareProbePath(Date.now());
   for (const origin of [null, ...origins]) {
     for (const host of hosts) {
       const label = `${host} via ${origin ?? 'Cloudflare'}`;
-      const result = probeHttps({ host, domain, hosts, origin });
+      const result = probeHttps({ host, domain, hosts, origin, path: origin ? '/' : cloudflarePath });
       const http = String(result.httpCode).padStart(3, '0');
-      const detail = `HTTP ${http}, curl exit ${result.curlCode}, remote IP ${result.remoteIp ?? ''}`;
+      const detail = `HTTP ${http}, curl exit ${result.curlCode}, remote IP ${result.remoteIp ?? ''}` +
+        (result.challenged ? ', Cloudflare challenge' : '');
       rows.push([label, detail]);
       core.info(`${label}: ${detail}`);
       if (result.curlCode !== 0) {
         core.setFailed(`${label}: ${detail}. ${result.stderr || result.message}`);
-      } else if (result.httpCode !== 200 || result.finalUrl !== `https://${domain}/`) {
+      } else if (!origin && result.challenged) {
+        core.setFailed(`${label}: Cloudflare challenged the probe before it reached the origin, so public TLS is unverified. Keep static assets exempt from bot challenges.`);
+      } else if (result.httpCode !== 200 || result.finalUrl !== result.expectedUrl) {
         core.setFailed(`${label}: unexpected response: ${detail}, final URL ${result.finalUrl}`);
       } else if (!origin && !result.cfRay) {
         core.setFailed(`${label}: response did not include a Cloudflare cf-ray header.`);

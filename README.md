@@ -21,8 +21,9 @@ The required **Pre-merge Quality Gate** passes only if both jobs succeed:
 
 - **Lint, security, and tests** runs the same [pre-commit hooks](.pre-commit-config.yaml)
   used locally: actionlint/ShellCheck and zizmor check changed workflows,
-  check-jsonschema validates the Renovate config, and Node tests cover the TLS
-  monitor. Hook/gate configuration changes and manual runs execute all hooks.
+  check-jsonschema validates the Renovate config, and Node tests cover TLS
+  monitoring and recovery. Hook/gate configuration changes and manual runs
+  execute all hooks.
   Gitleaks scans full commit history, including secrets added and later removed.
 - **Build site** runs the same [build](.github/workflows/build-site.yml) as
   deployment: it compiles the resume when its inputs change, then packages the site.
@@ -141,6 +142,13 @@ DNS, or lower Cloudflare security. It checks Pages certificate state, expiry wit
 Origin addresses come from `<repository-owner>.github.io`, never the proxied custom
 domain. Logs report HTTP status and curl exit status separately.
 
+The public Cloudflare probe requests `/favicon.ico` with a unique query string. The
+query bypasses the CDN cache, so a 526 still surfaces. Cloudflare bot protection
+challenges automated HTML requests from CI runners but, by default, not static
+assets. A challenged probe (`cf-mitigated: challenge`) never reaches the origin, so
+the monitor fails with a specific message instead of reporting the site healthy.
+Keep static assets exempt from bot challenges.
+
 Cloudflare **526** means origin-certificate validation failed. Switching to **Full**
 hides that problem; retain **Full (strict)** and repair the origin certificate.
 
@@ -158,18 +166,24 @@ reports a certificate error. The workflow then:
    list operations and a `PATCH` whose only field is the existing record's
    `proxied` flag. The workflow never creates or deletes DNS records.
 3. Verifies the Pages PAT with a no-op update before changing any DNS record. A
-   403 stops recovery immediately and leaves both CNAMEs untouched. GitHub can
-   return 409 "The certificate has not finished being issued" while a certificate
-   is already provisioning; that exact authorized-state response allows recovery
-   to continue, while any other conflict fails closed.
+   403 stops recovery immediately and leaves both CNAMEs untouched. While a
+   certificate is provisioning, GitHub returns 404 (observed) or 409 (documented)
+   with "The certificate has not finished being issued". Only that exact
+   authorized-state response lets recovery continue. Any other response, including
+   a plain 404, fails closed.
 4. Temporarily makes the CNAMEs DNS-only, verifies that state through Cloudflare's
    API, and waits up to 10 minutes for public DNS caches to reach Pages.
 5. Removes and immediately restores the Pages hostname without forcing HTTPS, then
    waits up to an hour for a certificate covering apex and `www`.
-6. Verifies both hostnames directly against every Pages origin without `--insecure`,
-   then enables Pages HTTPS enforcement after the certificate is valid.
+6. Waits up to about 5 minutes for both hostnames to verify directly against every
+   Pages origin without `--insecure`. It then enables Pages HTTPS enforcement,
+   retrying for up to about 5 minutes while GitHub reports the certificate as still
+   being issued. Other client errors stop recovery.
 7. Restores each record's original proxy state, including on failure, and verifies
-   that Cloudflare no longer returns 526.
+   that Cloudflare no longer returns 526. A challenged probe fails this check.
+
+Waits in steps 4–6 stop 80 minutes after recovery starts. That leaves time for
+rollback within the job's 120-minute timeout, because a runner timeout would skip it.
 
 The TLS monitor runs at most daily, and overlapping monitor/recovery runs queue so
 they cannot reset ACME state concurrently. A manual `Recover TLS Certificate` run on
