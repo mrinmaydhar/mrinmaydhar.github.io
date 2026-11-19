@@ -1,0 +1,2 @@
+# Python tools installed by the CI Gate. Renovate keeps these pins current.
+pre-commit==4.7.0
