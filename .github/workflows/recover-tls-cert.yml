@@ -1,0 +1,61 @@
+name: Recover TLS Certificate
+
+on:
+  workflow_call:
+    inputs:
+      from_monitor:
+        description: The TLS monitor failed and requested guarded recovery.
+        required: true
+        type: boolean
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        description: Zone-scoped token with DNS Read and DNS Edit permission.
+        required: true
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RECOVER to run a guarded manual recovery.
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: tls-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Recover Pages TLS certificate
+    if: ${{ github.ref == 'refs/heads/main' && (inputs.from_monitor || inputs.confirm == 'RECOVER') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    environment: github-pages
+    permissions:
+      contents: read
+      pages: write # Remove and restore only the verified custom domain on Pages.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Recover certificate and restore proxying
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        with:
+          script: |
+            const recover = require('./.github/scripts/recover-tls.cjs');
+            await recover({
+              github,
+              context,
+              core,
+              domain: process.env.SITE_DOMAIN,
+              zoneId: process.env.CLOUDFLARE_ZONE_ID,
+              cloudflareToken: process.env.CLOUDFLARE_API_TOKEN,
+            });
