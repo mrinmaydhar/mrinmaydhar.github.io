@@ -38,7 +38,9 @@ function fixture({
   dnsRecords = records(),
   returnAllRecords = false,
   pagesPreflightFailures = 0,
+  pagesPreflightError,
   pagesDetachFailures = 0,
+  pagesDetachAfterApplyFailures = 0,
   pagesRestoreFailures = 0,
   patchFailure,
   publicHttp = 200,
@@ -50,6 +52,7 @@ function fixture({
     directTlsError,
     patches: [],
     pagesUpdates: [],
+    pageRequests: [],
     requests: [],
     dnsChecks: new Map(),
     proxies: new Map(dnsRecords.map(record => [record.id, record.proxied])),
@@ -61,7 +64,12 @@ function fixture({
     async request(route, request) {
       assert.equal(route, 'PUT /repos/{owner}/{repo}/pages');
       state.pagesUpdates.push(request.cname);
+      state.pageRequests.push({
+        cname: request.cname,
+        https_enforced: request.https_enforced,
+      });
       if (state.pagesUpdates.length === 1) {
+        if (pagesPreflightError) throw pagesPreflightError;
         if (pagesPreflightFailures-- > 0) throw new Error('Pages permission denied');
         return { status: 204 };
       }
@@ -69,11 +77,17 @@ function fixture({
         if (pagesDetachFailures-- > 0) throw new Error('Pages detach failed');
         state.pages.cname = null;
         state.pages.https_certificate = null;
+        if (pagesDetachAfterApplyFailures-- > 0) throw new Error('Pages detach response lost');
       } else if (pagesRestoreFailures-- > 0) {
         throw new Error('Pages restore failed');
       } else {
-        state.pages = pages(false);
-        state.directTlsError = false;
+        if (request.https_enforced === undefined) {
+          state.pages = pages(false);
+          state.pages.https_enforced = false;
+          state.directTlsError = false;
+        } else {
+          state.pages.https_enforced = request.https_enforced;
+        }
       }
       return { status: 204 };
     },
@@ -177,7 +191,12 @@ test('recovery changes only the two allowed CNAME proxy flags and restores them'
   assert.deepEqual(await f.run(), { recovered: true, reason: 'certificate_recovered' });
   assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
   assert.deepEqual(new Set(f.state.patches.map(patch => patch.id)), new Set(targets.map(record => record.id)));
-  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain]);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain]);
+  assert.deepEqual(f.state.pageRequests.slice(1), [
+    { cname: null, https_enforced: undefined },
+    { cname: domain, https_enforced: undefined },
+    { cname: domain, https_enforced: true },
+  ]);
   assert.equal(f.state.requests.filter(request => request.method === 'GET').length, 4);
   for (const record of unrelated) assert.equal(f.state.proxies.get(record.id), record.proxied);
   const patches = f.state.requests.filter(request => request.method === 'PATCH');
@@ -190,6 +209,19 @@ test('direct certificate verification can trigger recovery without stale Pages m
   assert.equal((await f.run()).recovered, true);
 });
 
+test('HTTPS enforcement is sent only after the replacement certificate is ready', async () => {
+  const f = fixture({ broken: true, directTlsError: true });
+  f.state.pages.https_enforced = false;
+  await f.run();
+
+  assert.deepEqual(f.state.pageRequests, [
+    { cname: domain, https_enforced: false },
+    { cname: null, https_enforced: undefined },
+    { cname: domain, https_enforced: undefined },
+    { cname: domain, https_enforced: true },
+  ]);
+});
+
 test('Pages token preflight fails before Cloudflare is changed', async () => {
   const f = fixture({
     broken: true,
@@ -198,6 +230,32 @@ test('Pages token preflight fails before Cloudflare is changed', async () => {
   });
   await assert.rejects(f.run(), /PAGES_RECOVERY_TOKEN cannot manage GitHub Pages settings/);
   assert.deepEqual(f.state.pagesUpdates, [domain]);
+  assert.deepEqual(f.state.patches, []);
+});
+
+test('an authorized 409 from in-progress certificate issuance continues recovery', async () => {
+  const error = Object.assign(
+    new Error('The certificate has not finished being issued'),
+    { status: 409 },
+  );
+  const f = fixture({
+    broken: true,
+    directTlsError: true,
+    pagesPreflightError: error,
+  });
+  assert.equal((await f.run()).recovered, true);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain]);
+  assert.equal(f.state.pages.https_enforced, true);
+});
+
+test('other Pages preflight 409 responses still stop before Cloudflare changes', async () => {
+  const error = Object.assign(new Error('A different conflict occurred'), { status: 409 });
+  const f = fixture({
+    broken: true,
+    directTlsError: true,
+    pagesPreflightError: error,
+  });
+  await assert.rejects(f.run(), /PAGES_RECOVERY_TOKEN cannot manage/);
   assert.deepEqual(f.state.patches, []);
 });
 
@@ -220,6 +278,15 @@ test('Pages configuration drift aborts before Cloudflare changes', async () => {
     assert.deepEqual(f.state.patches, []);
     assert.deepEqual(f.state.pagesUpdates, []);
   }
+});
+
+test('healthy certificate restores disabled HTTPS enforcement without DNS changes', async () => {
+  const f = fixture();
+  f.state.pages.https_enforced = false;
+  assert.deepEqual(await f.run(), { recovered: true, reason: 'https_enforcement_restored' });
+  assert.deepEqual(f.state.pagesUpdates, [domain, domain]);
+  assert.deepEqual(f.state.patches, []);
+  assert.equal(f.state.pages.https_enforced, true);
 });
 
 test('missing, redirected, duplicate, or malformed CNAMEs abort before writes', async () => {
@@ -249,14 +316,14 @@ test('Pages and DNS state roll back after a Pages failure', async () => {
   assert.equal(f.state.pages.cname, domain);
 });
 
-test('a failed Pages detach is not followed by unnecessary restore attempts', async () => {
+test('an ambiguous Pages detach restores the custom domain before proxying resumes', async () => {
   const f = fixture({
     broken: true,
     directTlsError: true,
-    pagesDetachFailures: 1,
+    pagesDetachAfterApplyFailures: 1,
   });
-  await assert.rejects(f.run(), /Pages detach failed/);
-  assert.deepEqual(f.state.pagesUpdates, [domain, null]);
+  await assert.rejects(f.run(), /Pages detach response lost/);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain]);
   assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
   assert.equal(f.state.pages.cname, domain);
 });
@@ -286,5 +353,6 @@ test('Cloudflare 526 fails after original proxying and Pages domain are restored
   await assert.rejects(f.run(), /Cloudflare still returns 526/);
   assert.equal(f.state.pages.cname, domain);
   assert.deepEqual([...f.state.proxies.values()], [true, true]);
-  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain]);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain]);
+  assert.equal(f.state.pages.https_enforced, true);
 });

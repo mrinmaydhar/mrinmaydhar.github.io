@@ -28,12 +28,9 @@ function validatePages(pages, domain) {
   if (pages.protected_domain_state !== 'verified') {
     throw new Error(`Pages domain is not verified; refusing recovery.`);
   }
-  if (pages.https_enforced !== true) {
-    throw new Error('Pages HTTPS enforcement is disabled; refusing recovery.');
-  }
 }
 
-function needsCertificate(pages, now) {
+function needsDomainReset(pages, now) {
   const expires = Date.parse(pages.https_certificate?.expires_at);
   return pages.https_certificate?.state === 'bad_authz' ||
     (Number.isFinite(expires) && expires <= now);
@@ -44,7 +41,6 @@ function certificateReady(pages, hosts, domain, now) {
   const domains = new Set((cert?.domains || []).map(normalizeDnsName));
   return normalizeDnsName(pages.cname) === domain &&
     pages.protected_domain_state === 'verified' &&
-    pages.https_enforced === true &&
     READY.has(cert?.state) &&
     Date.parse(cert.expires_at) > now &&
     hosts.every(host => domains.has(host));
@@ -60,6 +56,10 @@ async function preflightPagesAccess(github, context, pages) {
   try {
     await updatePages(github, context, pages.cname, pages.https_enforced);
   } catch (error) {
+    if (error.status === 409 &&
+        /certificate has not finished being issued/i.test(error.message)) {
+      return;
+    }
     throw new Error(
       `PAGES_RECOVERY_TOKEN cannot manage GitHub Pages settings; refusing to change DNS: ${error.message}`,
       { cause: error },
@@ -268,8 +268,19 @@ module.exports = async function recoverTls({
     const directResults = hosts.flatMap(host =>
       origins.map(origin => probe(probeOptions, host, origin)),
     );
-    if (!needsCertificate(pages, now()) && !directResults.some(result => TLS_ERRORS.has(result.curlCode))) {
+    const domainReset = needsDomainReset(pages, now()) ||
+      directResults.some(result => TLS_ERRORS.has(result.curlCode));
+    if (!domainReset && pages.https_enforced === true) {
       return { recovered: false, reason: 'healthy' };
+    }
+    if (!domainReset) {
+      await preflightPagesAccess(github, context, pages);
+      await retry(() => updatePages(github, context, domain, true), sleep);
+      const enforced = await getPages(github, context);
+      if (enforced.https_enforced !== true) {
+        throw new Error('GitHub did not confirm Pages HTTPS enforcement.');
+      }
+      return { recovered: true, reason: 'https_enforcement_restored' };
     }
 
     if (!/^[0-9a-f]{32}$/i.test(zoneId || '') || !cloudflareToken) {
@@ -292,10 +303,10 @@ module.exports = async function recoverTls({
       await verifyDnsOnly(client, entries, hosts, originHostname, sleep);
       await waitForDns({ resolve4: resolveHost, sleep }, hosts, origins, limits);
 
-      await updatePages(github, context, null);
       detached = true;
+      await updatePages(github, context, null);
       await sleep(limits.detachDelayMs);
-      await updatePages(github, context, domain, true);
+      await updatePages(github, context, domain);
       detached = false;
 
       const certificate = await wait('GitHub Pages did not issue a valid certificate', {
@@ -314,6 +325,11 @@ module.exports = async function recoverTls({
       });
       core.info(`Pages certificate: state=${certificate.https_certificate.state}, expires=${certificate.https_certificate.expires_at}`);
       verifyOrigin(probeOptions, hosts, origins);
+      await retry(() => updatePages(github, context, domain, true), sleep);
+      const enforced = await getPages(github, context);
+      if (enforced.https_enforced !== true) {
+        throw new Error('GitHub did not confirm Pages HTTPS enforcement.');
+      }
     } catch (error) {
       operationError = error;
     }
@@ -322,7 +338,7 @@ module.exports = async function recoverTls({
       client,
       entries,
       detached,
-      () => updatePages(github, context, domain, true),
+      () => updatePages(github, context, domain),
       sleep,
     );
     if (operationError || rollbackErrors.length) {

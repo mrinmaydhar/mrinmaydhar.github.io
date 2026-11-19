@@ -21,7 +21,7 @@ const response = (code = 200, overrides = {}) => ({
 async function run(t, {
   certificate = healthyCertificate, curl = () => response(), apiError,
   siteDomain = domain, pagesDomain = siteDomain, owner = 'example',
-  addresses = originAddresses, dnsError,
+  addresses = originAddresses, dnsError, httpsEnforced = true,
 } = {}) {
   t.mock.method(Date, 'now', () => now);
   const calls = [];
@@ -42,7 +42,7 @@ async function run(t, {
   await checkTls({
     github: { rest: { repos: { async getPages() {
       if (apiError) throw apiError;
-      return { data: { cname: pagesDomain, https_certificate: certificate } };
+      return { data: { cname: pagesDomain, https_enforced: httpsEnforced, https_certificate: certificate } };
     } } } },
     context: { repo: { owner, repo: 'example' } },
     domain: siteDomain,
@@ -163,4 +163,9 @@ test('missing or invalid SITE_DOMAIN fails before any network calls', async t =>
 test('Pages domain drift is checked against the configured variable', async t => {
   const { failures } = await run(t, { pagesDomain: 'wrong.example' });
   assert.ok(failures.some(message => message.includes('Pages custom domain is wrong.example, expected example.com')));
+});
+
+test('Pages HTTPS enforcement drift fails the monitor', async t => {
+  const { failures } = await run(t, { httpsEnforced: false });
+  assert.ok(failures.some(message => message.includes('HTTPS enforcement is disabled')));
 });
