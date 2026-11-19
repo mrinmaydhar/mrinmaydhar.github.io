@@ -56,6 +56,17 @@ async function updatePages(github, context, cname, httpsEnforced) {
   await github.request('PUT /repos/{owner}/{repo}/pages', body);
 }
 
+async function preflightPagesAccess(github, context, pages) {
+  try {
+    await updatePages(github, context, pages.cname, pages.https_enforced);
+  } catch (error) {
+    throw new Error(
+      `PAGES_RECOVERY_TOKEN cannot manage GitHub Pages settings; refusing to change DNS: ${error.message}`,
+      { cause: error },
+    );
+  }
+}
+
 async function retry(action, sleep, attempts = 3) {
   let error;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -271,6 +282,8 @@ module.exports = async function recoverTls({
       `${record.host}|CNAME|${normalizeDnsName(record.content)}`,
     ]));
 
+    await preflightPagesAccess(github, context, pages);
+
     let operationError;
     try {
       for (const entry of entries) {
@@ -279,8 +292,8 @@ module.exports = async function recoverTls({
       await verifyDnsOnly(client, entries, hosts, originHostname, sleep);
       await waitForDns({ resolve4: resolveHost, sleep }, hosts, origins, limits);
 
-      detached = true;
       await updatePages(github, context, null);
+      detached = true;
       await sleep(limits.detachDelayMs);
       await updatePages(github, context, domain, true);
       detached = false;

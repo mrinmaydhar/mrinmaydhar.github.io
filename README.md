@@ -59,10 +59,14 @@ Configure **Settings -> Secrets and variables -> Actions** and
 | Variable | `SITE_DOMAIN` | Canonical hostname, currently `mrinmaydhar.com`; no scheme, port, or path |
 | Variable | `CLOUDFLARE_ZONE_ID` | Cloudflare zone used for DNS checks and cache purging |
 | `github-pages` environment secret | `CLOUDFLARE_API_TOKEN` | Zone-scoped **DNS Read**, **DNS Edit**, and **Cache Purge** |
+| `github-pages` environment secret | `PAGES_RECOVERY_TOKEN` | Fine-grained PAT limited to this repository with **Pages Read/Write** |
 
 Keep the Cloudflare token out of repository secrets: workflows on Renovate (and
 other same-repository) branches can read repository secrets, while the
 `github-pages` environment only allows `main`.
+The Pages token is required because GitHub's built-in `GITHUB_TOKEN` can deploy a
+Pages artifact but cannot reset an existing Pages custom domain. Store the PAT only
+in the `github-pages` environment and rotate it before expiry.
 
 `SITE_DOMAIN` must match **Settings -> Pages -> Custom domain**. Changing the
 variable does not change Pages, DNS, or static Open Graph URLs. Publishing uses an
@@ -151,12 +155,14 @@ reports a certificate error. The workflow then:
    IDs; unrelated records are never eligible. Cloudflare requests are limited to
    list operations and a `PATCH` whose only field is the existing record's
    `proxied` flag. The workflow never creates or deletes DNS records.
-3. Temporarily makes the CNAMEs DNS-only, verifies that state through Cloudflare's
+3. Verifies the Pages PAT with a no-op update before changing any DNS record. A
+   403 stops recovery immediately and leaves both CNAMEs untouched.
+4. Temporarily makes the CNAMEs DNS-only, verifies that state through Cloudflare's
    API, and waits up to 10 minutes for public DNS caches to reach Pages.
-4. Removes and immediately restores the Pages hostname, then waits up to an hour
+5. Removes and immediately restores the Pages hostname, then waits up to an hour
    for a certificate covering apex and `www`.
-5. Verifies both hostnames directly against every Pages origin without `--insecure`.
-6. Restores each record's original proxy state, including on failure, and verifies
+6. Verifies both hostnames directly against every Pages origin without `--insecure`.
+7. Restores each record's original proxy state, including on failure, and verifies
    that Cloudflare no longer returns 526.
 
 The TLS monitor runs at most daily, and overlapping monitor/recovery runs queue so

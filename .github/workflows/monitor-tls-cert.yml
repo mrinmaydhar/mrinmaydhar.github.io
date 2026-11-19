@@ -42,8 +42,8 @@ jobs:
     uses: ./.github/workflows/recover-tls-cert.yml # zizmor: ignore[self-repository] actionlint cannot parse $/ yet
     permissions:
       contents: read # Pass only the read permission needed to check out the recovery code.
-      pages: write # Pass only the permission needed to reset the Pages custom domain.
     with:
       from_monitor: true
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PAGES_RECOVERY_TOKEN: ${{ secrets.PAGES_RECOVERY_TOKEN }}

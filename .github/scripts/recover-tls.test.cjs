@@ -37,6 +37,8 @@ function fixture({
   directTlsError = false,
   dnsRecords = records(),
   returnAllRecords = false,
+  pagesPreflightFailures = 0,
+  pagesDetachFailures = 0,
   pagesRestoreFailures = 0,
   patchFailure,
   publicHttp = 200,
@@ -59,7 +61,12 @@ function fixture({
     async request(route, request) {
       assert.equal(route, 'PUT /repos/{owner}/{repo}/pages');
       state.pagesUpdates.push(request.cname);
+      if (state.pagesUpdates.length === 1) {
+        if (pagesPreflightFailures-- > 0) throw new Error('Pages permission denied');
+        return { status: 204 };
+      }
       if (request.cname === null) {
+        if (pagesDetachFailures-- > 0) throw new Error('Pages detach failed');
         state.pages.cname = null;
         state.pages.https_certificate = null;
       } else if (pagesRestoreFailures-- > 0) {
@@ -170,7 +177,7 @@ test('recovery changes only the two allowed CNAME proxy flags and restores them'
   assert.deepEqual(await f.run(), { recovered: true, reason: 'certificate_recovered' });
   assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
   assert.deepEqual(new Set(f.state.patches.map(patch => patch.id)), new Set(targets.map(record => record.id)));
-  assert.deepEqual(f.state.pagesUpdates, [null, domain]);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain]);
   assert.equal(f.state.requests.filter(request => request.method === 'GET').length, 4);
   for (const record of unrelated) assert.equal(f.state.proxies.get(record.id), record.proxied);
   const patches = f.state.requests.filter(request => request.method === 'PATCH');
@@ -181,6 +188,17 @@ test('recovery changes only the two allowed CNAME proxy flags and restores them'
 test('direct certificate verification can trigger recovery without stale Pages metadata', async () => {
   const f = fixture({ directTlsError: true });
   assert.equal((await f.run()).recovered, true);
+});
+
+test('Pages token preflight fails before Cloudflare is changed', async () => {
+  const f = fixture({
+    broken: true,
+    directTlsError: true,
+    pagesPreflightFailures: 1,
+  });
+  await assert.rejects(f.run(), /PAGES_RECOVERY_TOKEN cannot manage GitHub Pages settings/);
+  assert.deepEqual(f.state.pagesUpdates, [domain]);
+  assert.deepEqual(f.state.patches, []);
 });
 
 test('recursive DNS cache is allowed to expire beyond the five-minute TTL', async () => {
@@ -226,7 +244,19 @@ test('missing, redirected, duplicate, or malformed CNAMEs abort before writes', 
 test('Pages and DNS state roll back after a Pages failure', async () => {
   const f = fixture({ broken: true, directTlsError: true, pagesRestoreFailures: 1 });
   await assert.rejects(f.run(), /Pages restore failed/);
-  assert.deepEqual(f.state.pagesUpdates, [null, domain, domain]);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain, domain]);
+  assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
+  assert.equal(f.state.pages.cname, domain);
+});
+
+test('a failed Pages detach is not followed by unnecessary restore attempts', async () => {
+  const f = fixture({
+    broken: true,
+    directTlsError: true,
+    pagesDetachFailures: 1,
+  });
+  await assert.rejects(f.run(), /Pages detach failed/);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null]);
   assert.deepEqual(f.state.patches.map(patch => patch.proxied), [false, false, true, true]);
   assert.equal(f.state.pages.cname, domain);
 });
@@ -248,7 +278,7 @@ test('an uncertain Cloudflare write is rolled back, and rollback retries', async
   });
   await assert.rejects(f.run(), /PATCH failed/);
   assert.deepEqual([...f.state.proxies.values()], [true, true]);
-  assert.deepEqual(f.state.pagesUpdates, []);
+  assert.deepEqual(f.state.pagesUpdates, [domain]);
 });
 
 test('Cloudflare 526 fails after original proxying and Pages domain are restored', async () => {
@@ -256,4 +286,5 @@ test('Cloudflare 526 fails after original proxying and Pages domain are restored
   await assert.rejects(f.run(), /Cloudflare still returns 526/);
   assert.equal(f.state.pages.cname, domain);
   assert.deepEqual([...f.state.proxies.values()], [true, true]);
+  assert.deepEqual(f.state.pagesUpdates, [domain, null, domain]);
 });
