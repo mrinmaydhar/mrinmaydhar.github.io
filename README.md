@@ -58,7 +58,7 @@ Configure **Settings -> Secrets and variables -> Actions** and
 |---|---|---|
 | Variable | `SITE_DOMAIN` | Canonical hostname, currently `mrinmaydhar.com`; no scheme, port, or path |
 | Variable | `CLOUDFLARE_ZONE_ID` | Cloudflare zone used for DNS checks and cache purging |
-| `github-pages` environment secret | `CLOUDFLARE_API_TOKEN` | Zone-scoped **DNS Read** and **Cache Purge** only; DNS Edit is unnecessary |
+| `github-pages` environment secret | `CLOUDFLARE_API_TOKEN` | Zone-scoped **DNS Read**, **DNS Edit**, and **Cache Purge** |
 
 Keep the Cloudflare token out of repository secrets: workflows on Renovate (and
 other same-repository) branches can read repository secrets, while the
@@ -77,7 +77,8 @@ Cloudflare proxying enabled. Use **Full (strict)** SSL/TLS and Pages **Enforce H
 |---|---|
 | [CI Gate](.github/workflows/checks.yml) | PR to `main`, or manual |
 | [Deploy Site](.github/workflows/deploy.yml) | Push to `main` changing `web/**`, `resume/**`, or the build/deploy workflows; or manual |
-| [Monitor TLS Certificates](.github/workflows/fix-tls-cert.yml) | Daily at 03:17 UTC, or manual |
+| [Monitor TLS Certificates](.github/workflows/monitor-tls-cert.yml) | Daily at 03:17 UTC, or manual |
+| [Recover TLS Certificate](.github/workflows/recover-tls-cert.yml) | After a failed TLS monitor on `main`, or manual |
 
 Deployment publishes the complete site, then purges Cloudflare's cache and checks
 DNS. Run manual deployments from `main`; other branches cannot use `github-pages`.
@@ -110,6 +111,12 @@ Actions and pre-commit hooks are pinned to commit SHAs with exact version commen
 - The **Dependency Dashboard** issue lists updates waiting out the 7 days, major
   updates awaiting review, and lookup or config errors.
 
+The literal `v4` in `api.cloudflare.com/client/v4` is the Cloudflare REST API
+contract, not a pinned package or Action. Renovate cannot safely translate it to a
+future major API. The pinned GitHub Actions are updater-managed; Cloudflare request
+shape and DNS safety are covered by tests instead. Adding the Cloudflare SDK would
+add an install, lockfile, and update surface for only two read/patch operations.
+
 Limitations:
 
 - GitHub raises no security alerts for SHA-pinned Actions or hooks, so their fixes
@@ -131,32 +138,34 @@ domain. Logs report HTTP status and curl exit status separately.
 
 Cloudflare **526** means origin-certificate validation failed. Switching to **Full**
 hides that problem; retain **Full (strict)** and repair the origin certificate.
-For a certificate stuck in `bad_authz`, follow
-[GitHub's provisioning guidance](https://docs.github.com/en/pages/getting-started-with-github-pages/securing-your-github-pages-site-with-https#troubleshooting-certificate-provisioning-certificate-not-yet-created-error):
 
-1. Plan downtime: DNS-only access exposes an invalid origin certificate.
-2. Verify domain ownership in GitHub and retain its verification TXT record.
-   Never detach an unverified domain while DNS points to Pages.
-3. Temporarily make apex/`www` DNS-only. Wait for public A/AAAA records to resolve
-   to Pages; remove conflicting records and allow `letsencrypt.org` in any CAA policy.
-4. In Pages settings, remove and immediately re-add the configured hostname.
-   Restore it immediately if saving fails. Allow an hour or longer for provisioning;
-   avoid repeated resets and escalate persistent failures to GitHub Support.
-5. Verify both hostnames directly, without bypassing certificate validation:
+When the monitor fails on `main`, it calls the recovery workflow automatically.
+The recovery first rechecks Pages and the origin certificate; an unrelated WAF,
+HTTP, DNS, or monitor failure ends without writes. It resets the custom domain only
+when Pages reports an expired certificate or `bad_authz`, or direct TLS verification
+reports a certificate error. The workflow then:
 
-   ```sh
-   domain=$(gh variable get SITE_DOMAIN)
-   owner=$(gh repo view --json owner --jq '.owner.login')
-   addresses=$(dig +noall +answer "$owner.github.io" A | awk '$4 == "A" {print $5}')
-   test -n "$addresses" || { echo "No origin addresses found" >&2; exit 1; }
-   apex=${domain#www.}
-   for ip in $addresses; do
-     curl --fail --show-error --resolve "$apex:443:$ip" -o /dev/null "https://$apex/"
-     curl --fail --show-error --resolve "www.$apex:443:$ip" -o /dev/null "https://www.$apex/"
-   done
-   ```
+1. Requires the configured Pages domain to be verified, HTTPS-enforced, and unchanged.
+2. Requires both Cloudflare CNAMEs to point to `<repository-owner>.github.io`
+   before changing anything. It builds an allowlist from exactly those two record
+   IDs; unrelated records are never eligible. Cloudflare requests are limited to
+   list operations and a `PATCH` whose only field is the existing record's
+   `proxied` flag. The workflow never creates or deletes DNS records.
+3. Temporarily makes the CNAMEs DNS-only and waits for public DNS to reach Pages.
+4. Removes and immediately restores the Pages hostname, then waits up to an hour
+   for a certificate covering apex and `www`.
+5. Verifies both hostnames directly against every Pages origin without `--insecure`.
+6. Restores each record's original proxy state, including on failure, and verifies
+   that Cloudflare no longer returns 526.
 
-6. Restore proxying, keep Full (strict) and Enforce HTTPS, and run the TLS monitor.
+The TLS monitor runs at most daily, and overlapping monitor/recovery runs queue so
+they cannot reset ACME state concurrently. A manual `Recover TLS Certificate` run on
+`main` requires the confirmation value `RECOVER` and still runs the same checks. The
+recovery never changes Cloudflare's SSL mode, and any failed rollback leaves the
+workflow failed rather than silently succeeding.
 
-Repeated domain resets are not a renewal strategy. Investigate recurring ACME
-validation failures or consider Cloudflare Pages rather than automating resets.
+If recovery keeps failing, inspect its summary and
+[GitHub's provisioning guidance](https://docs.github.com/en/pages/getting-started-with-github-pages/securing-your-github-pages-site-with-https#troubleshooting-certificate-provisioning-certificate-not-yet-created-error)
+before manually retrying. Verify the domain-verification TXT record, remove
+conflicting A/AAAA records, and allow `letsencrypt.org` in any CAA policy. Repeated
+failures need escalation to GitHub Support or a move away from GitHub Pages.
