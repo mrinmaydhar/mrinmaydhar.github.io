@@ -1,0 +1,70 @@
+name: Build Site
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build static site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read # Read the existing site configuration during the build.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Restore compiled resume
+        id: resume-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resume/main.pdf
+          key: resume-${{ runner.os }}-${{ hashFiles('resume/**', '!resume/index.html', '!resume/main.pdf', '.github/workflows/build-site.yml') }}
+
+      - name: Compile LaTeX resume
+        if: ${{ steps.resume-cache.outputs.cache-hit != 'true' }}
+        uses: xu-cheng/latex-action@6549dc21effb2730855a1281407ecfcececc6c1b # 4.1.0
+        with:
+          root_file: resume/main.tex
+          work_in_root_file_dir: true
+
+      - name: Setup Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Prepare Output
+        run: |
+          if [ ! -s resume/main.pdf ]; then
+            echo "::error::The compiled resume is missing or empty; refusing to publish an incomplete site."
+            exit 1
+          fi
+
+          mkdir -p public
+
+          # Copy root web assets
+          cp -r web/* public/
+
+          # For each directory containing a compiled PDF, create a matching subpath
+          while IFS= read -r -d '' pdf; do
+            dir="$(dirname "$pdf")"
+            slug="${dir#./}"
+            mkdir -p "public/$slug"
+            cp "$pdf" "public/$slug/main.pdf"
+
+            # Copy the per-directory index.html viewer if it exists
+            if [ -f "$dir/index.html" ]; then
+              cp "$dir/index.html" "public/$slug/index.html"
+            fi
+          done < <(find . -path './.git' -prune -o -path './public' -prune -o -name 'main.pdf' -print0)
+
+          echo "--- Final site structure ---"
+          find public -type f | sort
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: './public'
