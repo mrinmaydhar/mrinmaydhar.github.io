@@ -18,6 +18,9 @@ module.exports = async function checkTls({ github, context, core, domain }) {
     if (pages.cname !== domain) {
       core.setFailed(`Pages custom domain is ${pages.cname}, expected ${domain}.`);
     }
+    if (pages.https_enforced !== true) {
+      core.setFailed('Pages HTTPS enforcement is disabled.');
+    }
     if (!['issued', 'uploaded', 'approved'].includes(cert?.state)) {
       core.setFailed(`Pages certificate is not ready: ${detail}. ${cert?.description ?? ''}`);
     }

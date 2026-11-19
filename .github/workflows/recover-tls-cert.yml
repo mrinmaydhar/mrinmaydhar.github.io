@@ -12,7 +12,7 @@ on:
         description: Zone-scoped token with DNS Read and DNS Edit permission.
         required: true
       PAGES_RECOVERY_TOKEN:
-        description: Fine-grained PAT with Pages read/write for this repository.
+        description: Fine-grained PAT with Pages and Administration read/write for this repository.
         required: true
   workflow_dispatch:
     inputs:

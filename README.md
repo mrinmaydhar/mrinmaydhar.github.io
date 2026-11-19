@@ -59,14 +59,15 @@ Configure **Settings -> Secrets and variables -> Actions** and
 | Variable | `SITE_DOMAIN` | Canonical hostname, currently `mrinmaydhar.com`; no scheme, port, or path |
 | Variable | `CLOUDFLARE_ZONE_ID` | Cloudflare zone used for DNS checks and cache purging |
 | `github-pages` environment secret | `CLOUDFLARE_API_TOKEN` | Zone-scoped **DNS Read**, **DNS Edit**, and **Cache Purge** |
-| `github-pages` environment secret | `PAGES_RECOVERY_TOKEN` | Fine-grained PAT limited to this repository with **Pages Read/Write** |
+| `github-pages` environment secret | `PAGES_RECOVERY_TOKEN` | Fine-grained PAT limited to this repository with **Pages** and **Administration Read/Write** |
 
 Keep the Cloudflare token out of repository secrets: workflows on Renovate (and
 other same-repository) branches can read repository secrets, while the
 `github-pages` environment only allows `main`.
 The Pages token is required because GitHub's built-in `GITHUB_TOKEN` can deploy a
 Pages artifact but cannot reset an existing Pages custom domain. Store the PAT only
-in the `github-pages` environment and rotate it before expiry.
+in the `github-pages` environment and rotate it before expiry. GitHub requires
+both permissions to update an existing Pages custom domain.
 
 `SITE_DOMAIN` must match **Settings -> Pages -> Custom domain**. Changing the
 variable does not change Pages, DNS, or static Open Graph URLs. Publishing uses an
@@ -149,19 +150,24 @@ HTTP, DNS, or monitor failure ends without writes. It resets the custom domain o
 when Pages reports an expired certificate or `bad_authz`, or direct TLS verification
 reports a certificate error. The workflow then:
 
-1. Requires the configured Pages domain to be verified, HTTPS-enforced, and unchanged.
+1. Requires the configured Pages domain to be verified and unchanged. HTTPS
+   enforcement may be disabled during certificate renewal and is restored afterward.
 2. Requires both Cloudflare CNAMEs to point to `<repository-owner>.github.io`
    before changing anything. It builds an allowlist from exactly those two record
    IDs; unrelated records are never eligible. Cloudflare requests are limited to
    list operations and a `PATCH` whose only field is the existing record's
    `proxied` flag. The workflow never creates or deletes DNS records.
 3. Verifies the Pages PAT with a no-op update before changing any DNS record. A
-   403 stops recovery immediately and leaves both CNAMEs untouched.
+   403 stops recovery immediately and leaves both CNAMEs untouched. GitHub can
+   return 409 "The certificate has not finished being issued" while a certificate
+   is already provisioning; that exact authorized-state response allows recovery
+   to continue, while any other conflict fails closed.
 4. Temporarily makes the CNAMEs DNS-only, verifies that state through Cloudflare's
    API, and waits up to 10 minutes for public DNS caches to reach Pages.
-5. Removes and immediately restores the Pages hostname, then waits up to an hour
-   for a certificate covering apex and `www`.
-6. Verifies both hostnames directly against every Pages origin without `--insecure`.
+5. Removes and immediately restores the Pages hostname without forcing HTTPS, then
+   waits up to an hour for a certificate covering apex and `www`.
+6. Verifies both hostnames directly against every Pages origin without `--insecure`,
+   then enables Pages HTTPS enforcement after the certificate is valid.
 7. Restores each record's original proxy state, including on failure, and verifies
    that Cloudflare no longer returns 526.
 
